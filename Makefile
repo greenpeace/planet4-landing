@@ -1,9 +1,25 @@
+# Name of the Helm release
 RELEASE_NAME ?= p4-landing
-CHART_VERSION ?= 0.3.0-beta1
 
-SHELL := /bin/bash
+# Static file source repository
+GIT_SRC := https://github.com/greenpeace/planet4-landing-page
 
-NAMESPACE ?= default
+# Helm chart name
+CHART_NAME ?= p4/static
+
+# Helm chart version
+CHART_VERSION ?= 0.3.0-beta3
+
+# Kubernetes namespace into which we deploy the Helm release
+NAMESPACE ?= landing
+
+# Container image tag to deploy
+IMAGE_TAG ?= develop
+
+# =============================================================================
+#
+# Plumbing. Shouldn't need to modify this
+#
 
 DEV_CLUSTER ?= p4-development
 DEV_PROJECT ?= planet-4-151612
@@ -38,21 +54,37 @@ endif
 
 REVISION_TAG = $(shell git rev-parse --short HEAD)
 
+SHELL := /bin/bash
+
+# =============================================================================
+
 lint:
 	yamllint .circleci/config.yml
 	yamllint values.yaml
 	yamllint env/dev/values.yaml
 	yamllint env/prod/values.yaml
 
+# =============================================================================
+#
+# Docker image targets
+#
+
+clean:
+	rm -fr docker/public
+
 pull:
 	docker pull gcr.io/planet-4-151612/openresty:latest
 
-build: lint pull
+docker/public:
+	git clone --depth 1 $(GIT_SRC) docker/public
+
+build: lint
+	$(MAKE) -j pull docker/public
 	docker build \
 		--tag=gcr.io/planet-4-151612/landing:$(BUILD_TAG) \
 		--tag=gcr.io/planet-4-151612/landing:$(BUILD_NUM) \
 		--tag=gcr.io/planet-4-151612/landing:$(REVISION_TAG) \
-		.
+		docker
 
 push: push-tag push-latest
 
@@ -68,24 +100,32 @@ push-latest:
 		echo "Not tagged.. skipping latest"; \
 	} fi
 
+
+# ============================================================================
+#
+# Deployments
+#
+
 dev: lint
 	gcloud config set project $(DEV_PROJECT)
 	gcloud container clusters get-credentials $(DEV_CLUSTER) --zone $(DEV_ZONE) --project $(DEV_PROJECT)
 	helm init --client-only
 	helm repo update
-	helm upgrade --install --force --wait $(RELEASE_NAME) p4/static \
+	helm upgrade --install --force --recreate-pods --wait $(RELEASE_NAME) $(CHART_NAME) \
 	  --version=$(CHART_VERSION) \
 		--namespace=$(NAMESPACE) \
 		--values values.yaml \
-		--values env/dev/values.yaml
+		--values env/dev/values.yaml \
+		--set image.tag=$(IMAGE_TAG)
 
 prod: lint
 	gcloud config set project $(PROD_PROJECT)
 	gcloud container clusters get-credentials $(PROD_CLUSTER) --zone $(PROD_ZONE) --project $(PROD_PROJECT)
 	helm init --client-only
 	helm repo update
-	helm upgrade --install --force --wait $(RELEASE_NAME) p4/static \
+	helm upgrade --install --force --wait $(RELEASE_NAME) $(CHART_NAME) \
 		--version=$(CHART_VERSION) \
 		--namespace=$(NAMESPACE) \
 		--values values.yaml \
-		--values env/prod/values.yaml
+		--values env/prod/values.yaml \
+		--set image.tag=$(IMAGE_TAG)
